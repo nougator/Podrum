@@ -10,62 +10,72 @@
 * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0
 """
 
-import json
+from podrum.network.NetBinaryStream import NetBinaryStream
 
-from podrum.network.protocol.DataPacket import DataPacket
-from podrum.network.protocol.ProtocolInfo import ProtocolInfo
-from podrum.utils.Utils import Utils
-
-class LoginPacket(DataPacket):
-    NID = ProtocolInfo.LOGIN_PACKET
+class DataPacket(NetBinaryStream):
+    NID = 0
+    PID_MASK = 0x3ff # 10 Bits
     
-    username = None
-    protocol = None
-    clientUUID = None
-    clientId = None
-    xuid = None
-    identityPublicKey = None
-    serverAddress = None
-    locale = None
-    chainData = {}
-    clientDataJwt = None
-    clientData = {}
-    skipVerification = False
+    SUBCLIENT_ID_MASK = 0x03 # 2 Bits
+    SENDER_SUBCLIENT_ID_SHIFT = 10
+    RECIPIENT_SUBCLIENT_ID_SHIFT = 12
     
-    def canBeSentBeforeLogin():
+    isEncoded = False
+    _encapsulatedPacket = None
+    
+    senderSubId = 0
+    recipientSubId = 0
+    
+    def pid(self):
+        return self.NID
+        
+    def getName(self):
+        return type(object).__name__
+        
+    def canBeBatched(self):
         return True
         
-    def mayHaveUnreadBytes(self):
-        return self.protocol != None and self.protocol != ProtocolInfo.MCBE_PROTOCOL_VERSION
+    def canBeSentBeforeLogin(self):
+        return False
         
-    def decodePayload(self):
-        self.protocol = self.getInt()
-        try:
-            buffer = DataPacket.NetBinaryStream(self.getString())
-            self.chainData = json.loads(buffer.get(buffer.getLInt()))
-            hasExtraData = False
-            for chain in self.chainData["chain"]:
-                webtoken = Utils.decodeJWT(chain)
-                if webtoken["extraData"] in locals() or webtoken["extraData"] in globals():
-                    if hasExtraData:
-                        raise Exception("Found 'extraData' multiple times in key chain")
-                    hasExtraData = True
-                    if webtoken["extraData"]["displayName"] in locals() or webtoken["extraData"]["displayName"] in globals():
-                        self.username = webtoken["extraData"]["displayName"]
-                    if webtoken["extraData"]["identity"] in locals() or webtoken["extraData"]["identity"] in globals():
-                        self.clientUUID = webtoken["extraData"]["identity"]
-                    if webtoken["extraData"]["XUID"] in locals() or webtoken["extraData"]["XUID"] in globals():
-                        self.xuid = webtoken["extraData"]["XUID"]
-                if webtoken["identityPublicKey"] in locals() or webtoken["identityPublicKey"] in globals():
-                    self.identityPublicKey = webtoken["identityPublicKey"]
-            self.clientDataJwt = buffer.get(buffer.getLInt())
-            self.clientData = Utils.decodeJWT(self.clientDataJwt)
-            self.clientId = self.clientData["ClientRandomId"] if self.clientData["ClientRandomId"] != None else None
-            self.serverAddress = self.clientData["ServerAddress"] if self.clientData["ServerAddress"] != None else None
-            self.locale = self.clientData["LanguageCode"] if self.clientData["LanguageCode"] != None else None
-        except:
-            if self.protocol == ProtocolInfo.MCBE_PROTOCOL_VERSION:
-                raise Exception("Error")
-                
-    def encodePayload(): pass
+    def mayHaveUnreadBytes(self):
+        return False
+        
+    def decodePayload(self): 
+        pass
+        
+    def decode(self):
+        self.offset = 0
+        self.decodeHeader()
+        self.decodePayload()
+        
+    def decodeHeader(self):
+        header = self.getUnsignedVarInt()
+        pid = header & self.PID_MASK
+        if pid != self.NID:
+            raise Exception(f"Expected {self.NID} for packet ID, got " + pid)
+        self.senderSubId = (header >> self.SENDER_SUBCLIENT_ID_SHIFT) & self.SUBCLIENT_ID_MASK
+        self.recipientSubId = (header >> self.RECIPIENT_SUBCLIENT_ID_SHIFT) & self.SUBCLIENT_ID_MASK;
     
+    def encodePayload(self): pass
+    
+    def encode(self):
+        self.reset()
+        self.encodeHeader()
+        self.encodePayload()
+        self.isEncoded = True
+        
+    def encodeHeader(self):
+        self.putUnsignedVarInt(
+            self.NID |
+            (self.senderSubId << self.SENDER_SUBCLIENT_ID_SHIFT) |
+            (self.recipientSubId << self.RECIPIENT_SUBCLIENT_ID_SHIFT)
+        )
+        
+    def writePayload(self): pass
+    
+    def clean(self):
+        self.buffer = ""
+        self.isEncoded = False
+        self.offset = 0
+        return self
